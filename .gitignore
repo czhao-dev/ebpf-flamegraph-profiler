@@ -1,0 +1,6 @@
+/target
+**/*.rs.bk
+
+# Generated from a running kernel's BTF via tools/gen-vmlinux.sh; not yet
+# used by any BPF program, but reserved for when CO-RE is needed.
+/profiler-bpf/include/vmlinux.h
