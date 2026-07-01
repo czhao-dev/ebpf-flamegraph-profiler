@@ -1,4 +1,4 @@
-# eBPF Flame Graph Profiler
+# eBPF CPU Flame Graph Profiler
 
 ![Language](https://img.shields.io/badge/language-C%20(eBPF)%20%2B%20Rust-blue)
 ![Kernel](https://img.shields.io/badge/Linux%20kernel-5.8%2B-orange?logo=linux&logoColor=white)
@@ -10,7 +10,7 @@ A low-overhead, system-wide CPU profiler that uses eBPF to sample on-CPU call st
 
 Architecturally: a **C** eBPF program attached to `perf_event_open` software CPU-clock events captures kernel and user-space stacks on every CPU at each sample. A **Rust** user-space daemon (built on [`aya`](https://aya-rs.dev/)) reads the BPF maps, resolves symbols from `/proc/kallsyms` and ELF symbol tables, and emits folded stacks that are either piped into Brendan Gregg's `flamegraph.pl` or rendered natively to a self-contained, interactive SVG with no external dependencies.
 
-> **Status: MVP.** What's implemented today: on-CPU sampling, frame-pointer stack unwinding, kernel + user symbol resolution, folded-stack output, and the native SVG renderer. **Not yet implemented:** DWARF-based unwinding, off-CPU (scheduler blocking) profiling, differential flame graphs, and speedscope JSON output. These are described below under [Planned / Not Yet Implemented](#planned--not-yet-implemented) as design intent, not shipped features.
+> **Status: MVP.** What's implemented today: on-CPU sampling, frame-pointer stack unwinding, kernel + user symbol resolution, folded-stack output, and the native SVG renderer. **Not yet implemented:** DWARF-based unwinding, off-CPU (scheduler blocking) profiling, differential flame graphs, and speedscope JSON output.
 
 ## Table of Contents
 
@@ -24,8 +24,6 @@ Architecturally: a **C** eBPF program attached to `perf_event_open` software CPU
 - [Usage](#usage)
 - [Testing](#testing)
 - [Design Decisions](#design-decisions)
-- [Planned / Not Yet Implemented](#planned--not-yet-implemented)
-- [Non-Goals and Known Limitations](#non-goals-and-known-limitations)
 - [References](#references)
 
 ## How It Works
@@ -88,7 +86,7 @@ struct perf_event_attr attr = {
 
 One `perf_event_open` file descriptor is opened per online CPU (via `aya`'s `PerfEvent::attach`, one call per entry from `aya::util::online_cpus()`) and the same BPF program is attached to each. The BPF program runs with interrupts disabled in a non-preemptible context; it must complete quickly and may not sleep or allocate memory.
 
-The program only calls stable, primitive-typed BPF helpers (`bpf_get_current_pid_tgid`, `bpf_get_stackid`, and hash/array map helpers) — it never reads kernel struct fields, so it does not currently need CO-RE (`vmlinux.h` / `BPF_CORE_READ`). That becomes necessary once code that inspects kernel structs is added — for example, an off-CPU profiler reading `task_struct` fields off the `sched:sched_switch` tracepoint (see [Planned](#planned--not-yet-implemented)). [`tools/gen-vmlinux.sh`](tools/gen-vmlinux.sh) is already in place for that future work.
+The program only calls stable, primitive-typed BPF helpers (`bpf_get_current_pid_tgid`, `bpf_get_stackid`, and hash/array map helpers) — it never reads kernel struct fields, so it does not currently need CO-RE (`vmlinux.h` / `BPF_CORE_READ`). That becomes necessary once code that inspects kernel structs is added — for example, an off-CPU profiler reading `task_struct` fields off the `sched:sched_switch` tracepoint. [`tools/gen-vmlinux.sh`](tools/gen-vmlinux.sh) is already in place for that future work.
 
 ### BPF Map Design
 
@@ -239,26 +237,9 @@ and the SVG output is well-formed XML containing the same resolved `fib+0x...` f
 
 **99 Hz over higher frequencies.** Higher sampling frequencies reduce statistical noise but increase overhead super-linearly. Brendan Gregg's original CPU profiling work established 99 Hz as the practical sweet spot for continuous profiling.
 
-**Frame-pointer unwinding only, for now.** DWARF-based unwinding is correct on more binaries but requires reading target process memory per frame — substantially more expensive, and a materially bigger implementation (a CFI interpreter). Frame-pointer mode covers the Linux kernel itself, modern Go binaries, and any C/C++ binary built with `-fno-omit-frame-pointer`, and was chosen as the MVP's only unwinding strategy to keep the initial implementation's scope tractable; DWARF is tracked as a follow-up (see below).
+**Frame-pointer unwinding only, for now.** DWARF-based unwinding is correct on more binaries but requires reading target process memory per frame — substantially more expensive, and a materially bigger implementation (a CFI interpreter). Frame-pointer mode covers the Linux kernel itself, modern Go binaries, and any C/C++ binary built with `-fno-omit-frame-pointer`, and was chosen as the MVP's only unwinding strategy to keep the initial implementation's scope tractable.
 
 **Native SVG over a `flamegraph.pl` dependency.** Requiring Perl to render output adds a dependency absent on many production hosts and containers. The folded-stack text output remains available for anyone who prefers the Perl tool.
-
-## Planned / Not Yet Implemented
-
-These are design intent, not shipped features — noted here so the gap between this document and the code is explicit:
-
-- **DWARF-based unwinding** (`--dwarf`): a CFI interpreter reading `.eh_frame`/`.debug_frame` via `/proc/<pid>/mem`, for binaries without frame pointers.
-- **Off-CPU profiling**: a `BPF_PROG_TYPE_TRACEPOINT` program on `sched:sched_switch`, recording scheduler blocking duration per stack via a ring buffer. This is the first feature that will actually require CO-RE (`vmlinux.h`/`BPF_CORE_READ`) to read `task_struct` fields.
-- **Differential flame graphs**: a `diff` subcommand computing the signed difference between two folded-stack files, color-coded by growth/shrinkage.
-- **Speedscope JSON output** (`--format=speedscope`) as a richer alternative to the SVG/folded outputs.
-- **JIT symbol support** (`/tmp/perf-<pid>.map`) for JVM/V8-style dynamically compiled code.
-
-## Non-Goals and Known Limitations
-
-- **No support for kernels < 5.8.** CO-RE (once used) requires BTF, available since 5.2 but commonly enabled in distributions only from 5.8 onward.
-- **No allocation profiling.** This profiler captures CPU time, not heap allocation frequency or size.
-- **No cross-machine aggregation.** Each invocation profiles one host.
-- **No Windows or macOS support for actually running the profiler.** eBPF on Linux is the only supported runtime platform — macOS is only used here for developing and unit-testing the non-BPF-touching Rust code (`kallsyms`, `usersym`, `folded`, `svg`, `cli`), via a `#[cfg(target_os = "linux")]` split that keeps `aya` off the dependency graph on other hosts.
 
 ## References
 
